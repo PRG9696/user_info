@@ -1,131 +1,77 @@
-import streamlit as st
 import pandas as pd
-import io
 
-# --- Page Config ---
-st.set_page_config(
-    page_title="Multi-Sheet Excel Comparison Tool",
-    page_icon="🔍",
-    layout="wide"
-)
 
-st.title("🔍 Multi-Sheet Excel Comparison Tool")
-st.markdown("Upload two Excel files to identify missing sheets, missing columns, and missing/different rows.")
+def find_sheet_name(excel_file, pattern):
+    """Finds a sheet name in an Excel file matching a wildcard pattern (case-insensitive)."""
+    xls = pd.ExcelFile(excel_file)
+    pattern = pattern.lower().replace("*", "")
 
-# --- File Uploader Sidebar ---
-st.sidebar.header("📁 Upload Files")
-file1 = st.sidebar.file_uploader("Upload File 1 (Base File)", type=["xlsx", "xls"], key="file1")
-file2 = st.sidebar.file_uploader("Upload File 2 (Comparison File)", type=["xlsx", "xls"], key="file2")
+    for sheet in xls.sheet_names:
+        if pattern in sheet.lower():
+            return sheet
+    return None
 
-if file1 and file2:
-    try:
-        # Load Excel files
-        xls1 = pd.ExcelFile(file1)
-        xls2 = pd.ExcelFile(file2)
 
-        sheets1 = set(xls1.sheet_names)
-        sheets2 = set(xls2.sheet_names)
+def compare_excel_files(base_path, comp_path):
+    # 1. Resolve sheet names dynamically
+    base_office_sheet = find_sheet_name(base_path, "*office")
+    comp_sheet2 = find_sheet_name(comp_path, "*sheet2")
 
-        st.subheader("📋 1. Sheet Availability Summary")
-        
-        col1, col2, col3 = st.columns(3)
-        common_sheets = sorted(list(sheets1.intersection(sheets2)))
-        missing_in_file2 = sorted(list(sheets1 - sheets2))
-        missing_in_file1 = sorted(list(sheets2 - sheets1))
+    print(f"Base Office Sheet Found: {base_office_sheet}")
+    print(f"Base Academic Sheet Found: Academic")
+    print(f"Comparison Sheet Found: {comp_sheet2}")
 
-        col1.metric("Common Sheets", len(common_sheets))
-        col2.metric("Missing in File 2", len(missing_in_file2))
-        col3.metric("Missing in File 1", len(missing_in_file1))
+    # 2. Read Base File Sheets (Column B is index 1)
+    df_base_office = pd.read_excel(
+        base_path, sheet_name=base_office_sheet, usecols=[1]
+    )
+    df_base_academic = pd.read_excel(
+        base_path, sheet_name="Academic", usecols=[1]
+    )
 
-        # Show missing sheet alerts
-        if missing_in_file2:
-            st.warning(f"⚠️ **Sheets present in File 1 but MISSING in File 2:** {', '.join(missing_in_file2)}")
-        if missing_in_file1:
-            st.warning(f"⚠️ **Sheets present in File 2 but MISSING in File 1:** {', '.join(missing_in_file1)}")
+    # Combine Base values from both sheets into a single set
+    col_b_office = df_base_office.iloc[:, 0].dropna().unique()
+    col_b_academic = df_base_academic.iloc[:, 0].dropna().unique()
+    base_values = set(col_b_office).union(set(col_b_academic))
 
-        if not common_sheets:
-            st.error("No matching sheet names found between the two files to compare content.")
-        else:
-            st.divider()
-            st.subheader("🔬 2. Detailed Sheet Comparison")
+    # 3. Read Comparison File Sheet (Column A is index 0)
+    df_comp = pd.read_excel(comp_path, sheet_name=comp_sheet2, usecols=[0])
+    comp_values = set(df_comp.iloc[:, 0].dropna().unique())
 
-            # Dropdown to select matching sheet
-            selected_sheet = st.selectbox("Select a sheet to compare:", common_sheets)
+    # 4. Compare Values
+    matches = base_values.intersection(comp_values)
+    only_in_base = base_values - comp_values
+    only_in_comp = comp_values - base_values
 
-            # Read selected sheets into dataframes
-            df1 = pd.read_excel(xls1, sheet_name=selected_sheet)
-            df2 = pd.read_excel(xls2, sheet_name=selected_sheet)
+    # 5. Display Results
+    print("\n" + "=" * 40)
+    print(f"SUMMARY OF COMPARISON")
+    print("=" * 40)
+    print(f"Total Unique Base Values (Col B): {len(base_values)}")
+    print(f"Total Unique Comparison Values (Col A): {len(comp_values)}")
+    print(f"Matching Values: {len(matches)}")
+    print(f"Values in Base but missing in Comparison: {len(only_in_base)}")
+    print(f"Values in Comparison but missing in Base: {len(only_in_comp)}")
 
-            st.write(f"**Selected Sheet:** `{selected_sheet}`")
-            c_info1, c_info2 = st.columns(2)
-            c_info1.info(f"**File 1 Shape:** {df1.shape[0]} rows × {df1.shape[1]} columns")
-            c_info2.info(f"**File 2 Shape:** {df2.shape[0]} rows × {df2.shape[1]} columns")
+    # 6. Export Results to Excel
+    output_file = "comparison_results.xlsx"
+    with pd.ExcelWriter(output_file) as writer:
+        pd.DataFrame(list(matches), columns=["Matches"]).to_excel(
+            writer, sheet_name="Matches", index=False
+        )
+        pd.DataFrame(
+            list(only_in_base), columns=["Missing_in_Comparison"]
+        ).to_excel(writer, sheet_name="Missing_in_Comp", index=False)
+        pd.DataFrame(list(only_in_comp), columns=["Missing_in_Base"]).to_excel(
+            writer, sheet_name="Missing_in_Base", index=False
+        )
 
-            # Check Column differences
-            cols1 = set(df1.columns)
-            cols2 = set(df2.columns)
-            missing_cols_in_2 = cols1 - cols2
-            missing_cols_in_1 = cols2 - cols1
+    print(f"\nDetailed report saved to: {output_file}")
 
-            if missing_cols_in_2:
-                st.error(f"Columns missing in File 2 (`{selected_sheet}`): {list(missing_cols_in_2)}")
-            if missing_cols_in_1:
-                st.error(f"Columns missing in File 1 (`{selected_sheet}`): {list(missing_cols_in_1)}")
 
-            # Row Comparison Strategy
-            st.subheader("🔎 Row Comparison Settings")
-            common_cols = list(cols1.intersection(cols2))
+# --- RUN SCRIPT ---
+base_file_path = "base_file.xlsx"
+comparison_file_path = "comparison_file.xlsx"
 
-            if not common_cols:
-                st.error("No matching columns to compare rows.")
-            else:
-                key_col = st.selectbox(
-                    "Select Unique Identifier / Key Column (e.g., ID, SKU, Email):", 
-                    options=["-- Compare Full Rows --"] + common_cols,
-                    help="Select a column with unique values to match records across files."
-                )
-
-                if key_col != "-- Compare Full Rows --":
-                    # Key-based comparison
-                    df1_clean = df1.dropna(subset=[key_col])
-                    df2_clean = df2.dropna(subset=[key_col])
-
-                    keys1 = set(df1_clean[key_col])
-                    keys2 = set(df2_clean[key_col])
-
-                    missing_keys_in_2 = keys1 - keys2
-                    missing_keys_in_1 = keys2 - keys1
-
-                    r_col1, r_col2 = st.columns(2)
-
-                    with r_col1:
-                        st.markdown(f"### ❌ Records in File 1 but MISSING in File 2 ({len(missing_keys_in_2)})")
-                        df_missing_2 = df1_clean[df1_clean[key_col].isin(missing_keys_in_2)]
-                        st.dataframe(df_missing_2, use_container_width=True, hide_index=True)
-
-                    with r_col2:
-                        st.markdown(f"### ❌ Records in File 2 but MISSING in File 1 ({len(missing_keys_in_1)})")
-                        df_missing_1 = df2_clean[df2_clean[key_col].isin(missing_keys_in_1)]
-                        st.dataframe(df_missing_1, use_container_width=True, hide_index=True)
-
-                else:
-                    # Full row comparison
-                    merged = pd.merge(df1[common_cols], df2[common_cols], how='outer', indicator=True)
-                    
-                    in_file1_only = merged[merged['_merge'] == 'left_only'].drop(columns=['_merge'])
-                    in_file2_only = merged[merged['_merge'] == 'right_only'].drop(columns=['_merge'])
-
-                    r_col1, r_col2 = st.columns(2)
-                    with r_col1:
-                        st.markdown(f"### Rows in File 1 only ({len(in_file1_only)})")
-                        st.dataframe(in_file1_only, use_container_width=True, hide_index=True)
-
-                    with r_col2:
-                        st.markdown(f"### Rows in File 2 only ({len(in_file2_only)})")
-                        st.dataframe(in_file2_only, use_container_width=True, hide_index=True)
-
-    except Exception as e:
-        st.error(f"Error processing files: {e}")
-
-else:
-    st.info("👆 Please upload **File 1** and **File 2** using the sidebar to begin comparison.")
+# Replace file paths with your actual filenames
+compare_excel_files(base_file_path, comparison_file_path)
